@@ -8,8 +8,8 @@ import matplotlib.pyplot as plt
 
 """
 This file preprocesses the data in colorization/training_small and colorization/validation_small
-Each file gets split into L and AB tensors and gets saved to preprocessed_data/<<dataset-type>>/L 
-and preprocessed_data/<<dataset-type>>/AB 
+Each file gets split into Y and UV tensors and gets saved to preprocessed_data/<<dataset-type>>/Y 
+and preprocessed_data/<<dataset-type>>/UV 
 """
 
 
@@ -17,27 +17,27 @@ and preprocessed_data/<<dataset-type>>/AB
 
 def verify_single_image(rgb_image, save_path=None):
     """
-    Process a single image through LAB conversion and back to verify correctness.
+    Process a single image through YUV conversion and back to verify correctness.
     """
-    # Convert to LAB
-    lab = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2LAB)
+    # Convert to YUV
+    yuv = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2YUV)
     
     # Split channels
-    L, A, B = cv2.split(lab)
+    Y, U, V = cv2.split(yuv)
     
     # Create tensors with correct normalization
-    L_tensor = torch.from_numpy(L).unsqueeze(0).float() / 100.0  # Normalize L to [0, 1]
-    AB_tensor = torch.from_numpy(np.stack((A, B), axis=0)).float() / 128.0  # Normalize AB to [-1, 1]
+    Y_tensor = torch.from_numpy(Y).unsqueeze(0).float() / 100.0  # Normalize Y to [0, 1]
+    UV_tensor = torch.from_numpy(np.stack((U, V), axis=0)).float() / 128.0  # Normalize UV to [-1, 1]
     
     # Convert back for verification
-    L_recover = (L_tensor.squeeze().numpy() * 100.0).astype(np.uint8)
-    AB_recover = (AB_tensor.numpy() * 128.0).astype(np.uint8)
+    Y_recover = (Y_tensor.squeeze().numpy() * 100.0).astype(np.uint8)
+    UV_recover = (UV_tensor.numpy() * 128.0).astype(np.uint8)
     
-    # Reconstruct LAB image
-    lab_reconstructed = cv2.merge([L_recover, AB_recover[0], AB_recover[1]])
+    # Reconstruct YUV image
+    yuv_reconstructed = cv2.merge([Y_recover, UV_recover[0], UV_recover[1]])
     
     # Convert back to RGB
-    rgb_reconstructed = cv2.cvtColor(lab_reconstructed, cv2.COLOR_LAB2RGB)
+    rgb_reconstructed = cv2.cvtColor(yuv_reconstructed, cv2.COLOR_YUV2RGB)
     
     if save_path:
         # Plot original and reconstructed side by side
@@ -57,10 +57,10 @@ def verify_single_image(rgb_image, save_path=None):
     
     return rgb_reconstructed
 
-def preprocess_and_save(data_path, l_output_path, ab_output_path):
+def preprocess_and_save(data_path, y_output_path, uv_output_path):
     """
-    Preprocess images and save LAB tensors
-    This function recombines the tensors L and AB for first 5 images as a sanity check.
+    Preprocess images and save YUV tensors
+    This function recombines the tensors Y and UV for first 5 images as a sanity check.
     """
     dataset = datasets.ImageFolder(data_path)
     os.makedirs("verification", exist_ok=True)
@@ -69,38 +69,38 @@ def preprocess_and_save(data_path, l_output_path, ab_output_path):
         # Convert PIL image to numpy array
         rgb_np = np.array(rgb)
         
-        # Resize to ensure consistent size
-        rgb_np = cv2.resize(rgb_np, (256, 256))
+        # Resize to ensure consistent size (no need to do this)
+        # rgb_np = cv2.resize(rgb_np, (256, 256))
         
         # Verify conversion process (save first few images for inspection)
         if idx < 5:
             verify_single_image(rgb_np, f"verification/verify_{idx}.png")
         
-        # Convert RGB to LAB
-        lab = cv2.cvtColor(rgb_np, cv2.COLOR_RGB2LAB)
-        L, A, B = cv2.split(lab)
+        # Convert RGB to YUV
+        yuv = cv2.cvtColor(rgb_np, cv2.COLOR_RGB2YUV)
+        Y, U, V = cv2.split(yuv)
         
         # Create tensors with proper normalization
-        L_tensor = torch.from_numpy(L).unsqueeze(0).float() / 100.0  # L normalized to [0, 1]
-        AB_tensor = torch.from_numpy(np.stack((A, B), axis=0)).float()   
-        AB_tensor = (AB_tensor - 128.0) / 128.0 # AB normalized to [-1, 1]
+        Y_tensor = torch.from_numpy(Y).unsqueeze(0).float() / 100.0  # Y normalized to [0, 1]
+        UV_tensor = torch.from_numpy(np.stack((U, V), axis=0)).float()
+        UV_tensor = (UV_tensor - 128.0) / 128.0 # UV normalized to [-1, 1]
 
         # Save tensors
-        torch.save(L_tensor, os.path.join(l_output_path, f"L_{idx}.pt"))
-        torch.save(AB_tensor, os.path.join(ab_output_path, f"AB_{idx}.pt"))
+        torch.save(Y_tensor, os.path.join(y_output_path, f"Y_{idx}.pt"))
+        torch.save(UV_tensor, os.path.join(uv_output_path, f"UV_{idx}.pt"))
 
 if __name__ == "__main__":
     # Your existing directory setup code here
     train_path = "colorization/training_small/"
-    train_l_path, train_ab_path = "preprocessed_data/training/L/", "preprocessed_data/training/AB/"
-    os.makedirs(train_l_path, exist_ok=True)
-    os.makedirs(train_ab_path, exist_ok=True)
+    train_y_path, train_uv_path = "preprocessed_data/training/Y/", "preprocessed_data/training/UV/"
+    os.makedirs(train_y_path, exist_ok=True)
+    os.makedirs(train_uv_path, exist_ok=True)
 
     valid_path = "colorization/validation_small/"
-    valid_l_path = "preprocessed_data/validation/L/"
-    valid_ab_path = "preprocessed_data/validation/AB/"
-    os.makedirs(valid_l_path, exist_ok=True)
-    os.makedirs(valid_ab_path, exist_ok=True)
+    valid_y_path = "preprocessed_data/validation/Y/"
+    valid_uv_path = "preprocessed_data/validation/UV/"
+    os.makedirs(valid_y_path, exist_ok=True)
+    os.makedirs(valid_uv_path, exist_ok=True)
     
-    preprocess_and_save(train_path, train_l_path, train_ab_path)
-    preprocess_and_save(valid_path, valid_l_path, valid_ab_path)
+    preprocess_and_save(train_path, train_y_path, train_uv_path)
+    preprocess_and_save(valid_path, valid_y_path, valid_uv_path)
