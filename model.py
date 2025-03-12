@@ -205,3 +205,44 @@ class LYT(nn.Module):
                 init.kaiming_uniform_(module.weight, a=0, mode='fan_in', nonlinearity='relu')
                 if module.bias is not None:
                     init.constant_(module.bias, 0)
+
+class Discriminator(nn.Module):
+    def __init__(self, input_nc, ndf=64, n_layers=3):
+        super(Discriminator, self).__init__()
+
+        kw = 4  # Kernel size
+        padw = 1  # Padding size
+
+        self.conv1 = nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw)
+        self.norm1 = LayerNormalization(ndf)
+        self.activation1 = nn.LeakyReLU(0.2, inplace=True)
+
+        nf_mult = 1
+        self.intermediate_layers = nn.ModuleList()
+        for n in range(1, n_layers):
+            nf_mult_prev = nf_mult
+            nf_mult = min(2 ** n, 8)
+            self.intermediate_layers.append(nn.Sequential(
+                nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw),
+                LayerNormalization(ndf * nf_mult),
+                SEBlock(ndf * nf_mult),
+                nn.LeakyReLU(0.2, inplace=True)
+            ))
+        
+        nf_mult_prev = nf_mult
+        nf_mult = min(2 ** n_layers, 8)
+        self.final_conv = nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw)
+        self.final_norm = LayerNormalization(ndf * nf_mult)
+        self.final_activation = nn.LeakyReLU(0.2, inplace=True)
+        
+        self.attention = MultiHeadSelfAttention(embed_size=ndf * nf_mult, num_heads=4)
+        
+        self.output_layer = nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)
+
+    def forward(self, input):
+        x = self.activation1(self.norm1(self.conv1(input)))
+        for layer in self.intermediate_layers:
+            x = layer(x)
+        x = self.final_activation(self.final_norm(self.final_conv(x)))
+        x = self.attention(x)
+        return self.output_layer(x)

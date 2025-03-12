@@ -4,7 +4,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt
 from PIL import Image
-from model import LYT
+from model import LYT, Discriminator
 from losses import CombinedLoss, color_loss, psnr_loss, multiscale_ssim_loss, illumnation_smoothness_loss
 from preprocess import preprocess_and_save
 import os
@@ -98,10 +98,18 @@ def main():
     print(f'LR: {learning_rate}; Epochs: {num_epochs}')
 
     # Model, loss, optimizer, and scheduler
-    model = LYT().to(device)
-    criterion = CombinedLoss(device)
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    scheduler = CosineAnnealingLR(optimizer, T_max=num_epochs)
+    generator = LYT().to(device)
+    discriminator = Discriminator(input_nc=3).to(device)
+
+    criterion_g = CombinedLoss(device)
+    criterion_d = nn.BCEWithLogitsLoss()
+
+    optimizer_g = optim.Adam(generator.parameters(), lr=learning_rate)
+    optimizer_d = optim.Adam(discriminator.parameters(), lr=learning_rate)
+
+    scheduler_g = CosineAnnealingLR(optimizer_g, T_max=num_epochs)
+    scheduler_d = CosineAnnealingLR(optimizer_d, T_max=num_epochs)
+
     scaler = torch.cuda.amp.GradScaler()
 
     best_psnr = 0
@@ -113,24 +121,74 @@ def main():
 
     print('Training started.')
     for epoch in range(num_epochs):
-        model.train()
-        train_loss = 0.0
+
+        generator.train()
+        discriminator.train()
+        train_loss_g = 0.0
+        train_loss_d = 0.0
+
         for batch_idx, batch in enumerate(train_loader):
             y_inputs, uv_inputs, targets = batch
             y_inputs, uv_inputs, targets = y_inputs.to(device), uv_inputs.to(device), targets.to(device)
 
-            optimizer.zero_grad()
+            # =========================
+            # 1) TRAIN DISCRIMINATOR
+            # =========================
+            optimizer_d.zero_grad()
 
-            outputs = model(y_inputs, uv_inputs)
-            loss = criterion(outputs, targets)
+            # 1a) Real images
+            real_labels = torch.ones((targets.size(0), 1, 30, 30), device=device)   # shape matches D output
+            fake_labels = torch.zeros((targets.size(0), 1, 30, 30), device=device)
+            
+            # Discriminator output on real images
+            real_preds = discriminator(targets)
+            real_loss = criterion_d(real_preds, real_labels)
 
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
+            # 1b) Fake images
+            with torch.no_grad():
+                fake_images = generator(y_inputs, uv_inputs)  # G in eval mode for D’s perspective
+            fake_preds = discriminator(fake_images)
+            fake_loss = criterion_d(fake_preds, fake_labels)
+
+            # Total D loss
+            d_loss = (real_loss + fake_loss) * 0.5
+
+            # Backprop D
+            scaler.scale(d_loss).backward()
+            scaler.step(optimizer_d)
             scaler.update()
 
-            train_loss += loss.item()
+            train_loss_d += d_loss.item()
 
-        avg_psnr, avg_ssim, avg_color, avg_ill_smooth_loss = validate(model, valid_loader, device)
+            # ======================
+            # 2) TRAIN GENERATOR
+            # ======================
+            optimizer_g.zero_grad()
+
+            # Re‐generate fake images *without* no_grad(), so it accumulates gradients
+            fake_images = generator(y_inputs, uv_inputs)
+
+            # 2a) Adversarial loss: we want disc(fake) → real_labels
+            adv_preds = discriminator(fake_images)
+            g_adv_loss = criterion_d(adv_preds, real_labels)
+            
+            # 2b) Combine with your existing "content" or "perceptual" losses
+            # CombinedLoss or any other custom losses you want
+            g_content_loss = criterion_g(fake_images, targets)
+            
+            # Suppose you blend them, e.g. total_g_loss = content_loss + lambda_adv * adv_loss
+            # You can tune lambda_adv to balance how strongly you want the adversarial push
+            lambda_adv = 0.001
+            g_loss = g_content_loss + lambda_adv * g_adv_loss
+
+            # Backprop G
+            scaler.scale(g_loss).backward()
+            scaler.step(optimizer_g)
+            scaler.update()
+
+            train_loss_g += g_loss.item()
+
+        avg_psnr, avg_ssim, avg_color, avg_ill_smooth_loss = validate(generator, valid_loader, device)
         
         epochs.append(epoch + 1)
         psnr_losses.append(avg_psnr)
@@ -139,12 +197,13 @@ def main():
         ill_smooth_losses.append(avg_ill_smooth_loss)
 
         print(f'Epoch {epoch + 1}/{num_epochs}, PSNR: {avg_psnr:.6f}, SSIM: {avg_ssim:.6f}')
-        scheduler.step()
+        scheduler_g.step()
+        scheduler_d.step()
 
         if avg_psnr > best_psnr:
             best_psnr = avg_psnr
-            torch.save(model.state_dict(), 'best_model.pth')
-            print(f'Saving model with PSNR: {best_psnr:.6f}')
+            torch.save(generator.state_dict(), 'best_generator.pth')
+            print(f'Saving generator with PSNR: {best_psnr:.6f}')
 
     psnr_losses = torch.stack(psnr_losses, dim=0)
     ssim_losses = torch.stack(ssim_losses, dim=0)
@@ -156,7 +215,7 @@ def main():
     plt.plot(epochs, color_losses, label='Color')
     plt.plot(epochs, ill_smooth_losses, label='Illumination Smoothness')
 
-    plt.title('Losses of Validation Set Throughout Model Training')
+    plt.title('Losses of Validation Set Throughout generator Training')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     
