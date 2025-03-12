@@ -162,19 +162,19 @@ class LYT(nn.Module):
             nn.ReLU(inplace=True)
         )
     
-    def _rgb_to_ycbcr(self, image):
-        r, g, b = image[:, 0, :, :], image[:, 1, :, :], image[:, 2, :, :]
-    
-        y = 0.299 * r + 0.587 * g + 0.114 * b
-        u = -0.14713 * r - 0.28886 * g + 0.436 * b + 0.5
-        v = 0.615 * r - 0.51499 * g - 0.10001 * b + 0.5
-        
-        yuv = torch.stack((y, u, v), dim=1)
-        return yuv
 
-    def forward(self, inputs):
-        ycbcr = self._rgb_to_ycbcr(inputs)
-        y, cb, cr = torch.split(ycbcr, 1, dim=1)
+    def forward(self, y, uv):
+        """
+        Forward pass with pre-converted YUV components
+        
+        Args:
+            y (torch.Tensor): Y component tensor with shape [B, 1, H, W]
+            uv (torch.Tensor): UV components tensor with shape [B, 2, H, W]
+        
+        Returns:
+            torch.Tensor: Enhanced RGB image with shape [B, 3, H, W]
+        """
+        cb, cr = torch.split(uv, 1, dim=1)
         cb = self.denoiser_cb(cb) + cb
         cr = self.denoiser_cr(cr) + cr
 
