@@ -197,7 +197,10 @@ class LYT(nn.Module):
 
         recombined = self.recombine(torch.cat([ref, lum], dim=1))
         output = self.final_adjustments(recombined)
-        return torch.sigmoid(output)
+        output = torch.sigmoid(output)
+        # Add clipping for safety
+        output = torch.clamp(output, 0, 1)
+        return output
     
     def _init_weights(self):
         for module in self.children():

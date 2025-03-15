@@ -23,7 +23,7 @@ def color_loss(y_true, y_pred):
 
 def psnr_loss(y_true, y_pred):
     mse = F.mse_loss(y_true, y_pred)
-    psnr = 20 * torch.log10(1.0 / torch.sqrt(mse))
+    psnr = 20 * torch.log10(1.0 / torch.sqrt(mse)  + 1e-8)
     return 40.0 - torch.mean(psnr)
 
 def smooth_l1_loss(y_true, y_pred):
@@ -48,13 +48,14 @@ def histogram_loss(y_true, y_pred, bins=256, sigma=0.01):
     hist_distance = torch.mean(torch.abs(y_true_hist - y_pred_hist))
     return hist_distance
 
-def exposure_loss(y_pred):
+
+def exposure_loss(y_true, y_pred):
     pixel_means = torch.mean(y_true, dim=1, keepdim=True)
     pooling = torch.nn.AvgPool2d(16, 16) 
     mean = pooling(pixel_means)
     return torch.mean(torch.square(mean - 0.6))
 
-def illumnation_smoothness_loss(y_pred):
+def illumnation_smoothness_loss(y_true, y_pred):
     batches = y_pred.size()[0]
     channels = y_pred.size()[1]
     height = y_pred.size()[2]
@@ -64,40 +65,48 @@ def illumnation_smoothness_loss(y_pred):
     width_count = width * (channels - 1)
 
     height_variance = torch.sum(torch.square((y_pred[:, :, 1:, :] - y_pred[:, :, :height - 1, :])))
-    width_variance = torch.sum(torch.square((x[:, :, :, 1:] - x[:, :, :, :width - 1])))
+    width_variance = torch.sum(torch.square((y_pred[:, :, :, 1:] - y_pred[:, :, :, :width - 1])))
 
     return 2 * (height_variance / height_count + width_variance / width_count) / batches
 
 def spatial_consistency_loss(y_true, y_pred):
-  left_kernel = torch.tensor([[[[0, 0, 0]], [[-1, 1, 0]], [[0, 0, 0]]]])
-  right_kernel = torch.tensor([[[[0, 0, 0]], [[0, 1, -1]], [[0, 0, 0]]]])
-  up_kernel = torch.tensor([[[[0, -1, 0]], [[0, 1, 0]], [[0, 0, 0]]]])
-  down_kernel = torch.tensor([[[[0, 0, 0]], [[0, 1, 0]], [[0, -1, 0]]]])
+    # We need to fix kernel dimensions to match input channels (1)
+    left_kernel = torch.tensor([[[[0, 0, 0], [-1, 1, 0], [0, 0, 0]]]]).float().to(y_true.device)
+    right_kernel = torch.tensor([[[[0, 0, 0], [0, 1, -1], [0, 0, 0]]]]).float().to(y_true.device)
+    up_kernel = torch.tensor([[[[0, -1, 0], [0, 1, 0], [0, 0, 0]]]]).float().to(y_true.device)
+    down_kernel = torch.tensor([[[[0, 0, 0], [0, 1, 0], [0, -1, 0]]]]).float().to(y_true.device)
   
-  original_mean = torch.mean(y_true, dim=1, keepdim=True)
-  enhanced_mean = torch.mean(y_pred, dim=1, keepdim=True)
+    original_mean = torch.mean(y_true, dim=1, keepdim=True)  # This has 1 channel
+    enhanced_mean = torch.mean(y_pred, dim=1, keepdim=True)  # This has 1 channel
 
-  pooling = torch.nn.AvgPool2d(4, 4)
+    pooling = torch.nn.AvgPool2d(4, 4)
 
-  original_avg_pool = pooling(original_mean)
-  enhanced_avg_pool = pooling(enhanced_mean)
+    original_avg_pool = pooling(original_mean)
+    enhanced_avg_pool = pooling(enhanced_mean)
   
-  k_original_left = F.conv2d(original_avg_pool, left_kernel, stride=(1, 1, 1, 1), padding=1)
-  k_original_right = F.conv2d(original_avg_pool, right_kernel, strides=(1, 1, 1, 1), padding=1)
-  k_original_up = F.conv2d(original_avg_pool, up_kernel, strides=(1, 1, 1, 1), padding=1)
-  k_original_down = F.conv2d(original_avg_pool, down_kernel, strides(1, 1, 1, 1), padding=1)
+    # Reshape kernels to match input [out_channels, in_channels, height, width]
+    left_kernel = left_kernel.reshape(1, 1, 3, 3)
+    right_kernel = right_kernel.reshape(1, 1, 3, 3)
+    up_kernel = up_kernel.reshape(1, 1, 3, 3)
+    down_kernel = down_kernel.reshape(1, 1, 3, 3)
 
-  k_enhanced_left = F.conv2d(enhanced_avg_pool, left_kernel, strides=(1, 1, 1, 1), padding=1)
-  k_enhanced_right = F.conv2d(enhanced_avg_pool, right_kernel, strides=(1, 1, 1, 1), padding=1)
-  k_enhanced_up = F.conv2d(enhanced_avg_pool, up_kernel, strides=(1, 1, 1, 1), padding=1)
-  k_enhanced_down = F.conv2d(enhanced_avg_pool, down_kernel, strides=(1, 1, 1, 1), padding=1)
+    # Now the convolutions should work correctly
+    k_original_left = F.conv2d(original_avg_pool, left_kernel, stride=1, padding=1)
+    k_original_right = F.conv2d(original_avg_pool, right_kernel, stride=1, padding=1)
+    k_original_up = F.conv2d(original_avg_pool, up_kernel, stride=1, padding=1)
+    k_original_down = F.conv2d(original_avg_pool, down_kernel, stride=1, padding=1)
 
-  k_left = torch.square(k_original_left - k_enhanced_left)
-  k_right = torch.square(k_original_right - k_enhanced_right)
-  k_up = torch.square(k_original_up - k_enhanced_up)
-  k_down = torch.square(k_original_down - k_enhanced_down)
+    k_enhanced_left = F.conv2d(enhanced_avg_pool, left_kernel, stride=1, padding=1)
+    k_enhanced_right = F.conv2d(enhanced_avg_pool, right_kernel, stride=1, padding=1)
+    k_enhanced_up = F.conv2d(enhanced_avg_pool, up_kernel, stride=1, padding=1)
+    k_enhanced_down = F.conv2d(enhanced_avg_pool, down_kernel, stride=1, padding=1)
 
-  return k_left + k_right + k_up + k_down
+    k_left = torch.square(k_original_left - k_enhanced_left)
+    k_right = torch.square(k_original_right - k_enhanced_right)
+    k_up = torch.square(k_original_up - k_enhanced_up)
+    k_down = torch.square(k_original_down - k_enhanced_down)
+
+    return torch.mean(k_left + k_right + k_up + k_down)
 
 class CombinedLoss(nn.Module):
     def __init__(self, device):
@@ -109,7 +118,7 @@ class CombinedLoss(nn.Module):
         self.alpha4 = 0.5
         self.alpha5 = 0.0083
         self.alpha6 = 0.25
-        self.alpha7 = 0.1
+        #self.alpha7 = 0.1
 
     def forward(self, y_true, y_pred):
         smooth_l1_l = smooth_l1_loss(y_true, y_pred)
@@ -118,14 +127,14 @@ class CombinedLoss(nn.Module):
         hist_l = histogram_loss(y_true, y_pred)
         psnr_l = psnr_loss(y_true, y_pred)
         color_l = color_loss(y_true, y_pred)
-        exposure_l = exposure_loss(y_pred)
-        ill_smooth_l = illumnation_smoothness_loss(y_pred)
-        spatial_const_l = spatial_consistency_loss(y_true, y_pred)
+        #exposure_l = exposure_loss(y_true, y_pred)
+        #ill_smooth_l = illumnation_smoothness_loss(y_true, y_pred)
+        #spatial_const_l = spatial_consistency_loss(y_true, y_pred)
 
         total_loss = (self.alpha1 * smooth_l1_l + self.alpha2 * perc_l + 
                       self.alpha3 * hist_l + self.alpha5 * psnr_l + 
-                      self.alpha6 * color_l + self.alpha4 * ms_ssim_l +
-                      self.alpha7 * exposure_l + self.alpha7 * ill_smooth_l +
-                      self.alpha7 * spatial_const_l)
+                      self.alpha6 * color_l + self.alpha4 * ms_ssim_l)
+                      #self.alpha7 * exposure_l + self.alpha7 * ill_smooth_l +
+                      #self.alpha7 * spatial_const_l)
 
         return torch.mean(total_loss)
