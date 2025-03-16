@@ -138,7 +138,7 @@ class Denoiser(nn.Module):
                 init.constant_(layer.bias, 0)
 
 class LYT(nn.Module):
-    def __init__(self, filters=32):
+    def __init__(self, filters=64):
         super(LYT, self).__init__()
         self.process_y = self._create_processing_layers(filters)
         self.process_cb = self._create_processing_layers(filters)
@@ -146,14 +146,23 @@ class LYT(nn.Module):
 
         self.denoiser_cb = Denoiser(filters // 2)
         self.denoiser_cr = Denoiser(filters // 2)
-        self.lum_pool = nn.MaxPool2d(8)
-        self.lum_mhsa = MultiHeadSelfAttention(embed_size=filters, num_heads=4)
-        self.lum_up = nn.Upsample(scale_factor=8, mode='nearest')
-        self.lum_conv = nn.Conv2d(filters, filters, kernel_size=1, padding=0)
+        
+        self.lum_conv1 = nn.Conv2d(filters, filters, kernel_size=3, padding=1)
+        self.lum_conv2 = nn.Conv2d(filters, filters, kernel_size=3, padding=1)
+        
+        self.lum_conv = nn.Sequential(
+            nn.Conv2d(filters, filters*2, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(filters*2, filters, kernel_size=3, padding=1),
+        )
+        
         self.ref_conv = nn.Conv2d(filters * 2, filters, kernel_size=1, padding=0)
         self.msef = MSEFBlock(filters)
         self.recombine = nn.Conv2d(filters * 2, filters, kernel_size=3, padding=1)
         self.final_adjustments = nn.Conv2d(filters, 3, kernel_size=3, padding=1)
+        
+        self.shortcut_conv = nn.Conv2d(1, 3, kernel_size=1, padding=0)
+        
         self._init_weights()
 
     def _create_processing_layers(self, filters):
@@ -161,19 +170,10 @@ class LYT(nn.Module):
             nn.Conv2d(1, filters, kernel_size=3, padding=1),
             nn.ReLU(inplace=True)
         )
-    
 
     def forward(self, y, uv):
-        """
-        Forward pass with pre-converted YUV components
+        y_original = y
         
-        Args:
-            y (torch.Tensor): Y component tensor with shape [B, 1, H, W]
-            uv (torch.Tensor): UV components tensor with shape [B, 2, H, W]
-        
-        Returns:
-            torch.Tensor: Enhanced RGB image with shape [B, 3, H, W]
-        """
         cb, cr = torch.split(uv, 1, dim=1)
         cb = self.denoiser_cb(cb) + cb
         cr = self.denoiser_cr(cr) + cr
@@ -183,11 +183,12 @@ class LYT(nn.Module):
         cr_processed = self.process_cr(cr)
 
         ref = torch.cat([cb_processed, cr_processed], dim=1)
+        
+        # Simplified luminance processing with more skip connections
         lum = y_processed
-        lum_1 = self.lum_pool(lum)
-        lum_1 = self.lum_mhsa(lum_1)
-        lum_1 = self.lum_up(lum_1)
-        lum = lum + lum_1
+        lum = lum + self.lum_conv1(lum)
+        lum = lum + self.lum_conv2(lum)
+        lum = lum + self.lum_conv(lum)
 
         ref = self.ref_conv(ref)
         shortcut = ref
@@ -197,10 +198,15 @@ class LYT(nn.Module):
 
         recombined = self.recombine(torch.cat([ref, lum], dim=1))
         output = self.final_adjustments(recombined)
-        output = torch.sigmoid(output)
+        
+        # Global shortcut to preserve original details
+        y_shortcut = self.shortcut_conv(y_original)
+        output = torch.sigmoid(output + 0.1 * y_shortcut)
+        
         # Add clipping for safety
         output = torch.clamp(output, 0, 1)
         return output
+
     
     def _init_weights(self):
         for module in self.children():
@@ -212,40 +218,34 @@ class LYT(nn.Module):
 class Discriminator(nn.Module):
     def __init__(self, input_nc, ndf=64, n_layers=3):
         super(Discriminator, self).__init__()
-
-        kw = 4  # Kernel size
-        padw = 1  # Padding size
-
-        self.conv1 = nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw)
-        self.norm1 = LayerNormalization(ndf)
-        self.activation1 = nn.LeakyReLU(0.2, inplace=True)
-
+        
+        sequence = [
+            nn.Conv2d(input_nc, ndf, kernel_size=4, stride=2, padding=1),
+            nn.LeakyReLU(0.2, True)
+        ]
+        
         nf_mult = 1
-        self.intermediate_layers = nn.ModuleList()
         for n in range(1, n_layers):
             nf_mult_prev = nf_mult
             nf_mult = min(2 ** n, 8)
-            self.intermediate_layers.append(nn.Sequential(
-                nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw),
-                LayerNormalization(ndf * nf_mult),
-                SEBlock(ndf * nf_mult),
-                nn.LeakyReLU(0.2, inplace=True)
-            ))
+            sequence += [
+                nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, 
+                          kernel_size=4, stride=2, padding=1, bias=False),
+                nn.BatchNorm2d(ndf * nf_mult),
+                nn.LeakyReLU(0.2, True)
+            ]
         
         nf_mult_prev = nf_mult
         nf_mult = min(2 ** n_layers, 8)
-        self.final_conv = nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw)
-        self.final_norm = LayerNormalization(ndf * nf_mult)
-        self.final_activation = nn.LeakyReLU(0.2, inplace=True)
+        sequence += [
+            nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, 
+                      kernel_size=4, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(ndf * nf_mult),
+            nn.LeakyReLU(0.2, True),
+            nn.Conv2d(ndf * nf_mult, 1, kernel_size=4, stride=1, padding=1)
+        ]
         
-        self.attention = MultiHeadSelfAttention(embed_size=ndf * nf_mult, num_heads=4)
+        self.model = nn.Sequential(*sequence)
         
-        self.output_layer = nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)
-
     def forward(self, input):
-        x = self.activation1(self.norm1(self.conv1(input)))
-        for layer in self.intermediate_layers:
-            x = layer(x)
-        x = self.final_activation(self.final_norm(self.final_conv(x)))
-        x = self.attention(x)
-        return self.output_layer(x)
+        return self.model(input)

@@ -23,7 +23,7 @@ def color_loss(y_true, y_pred):
 
 def psnr_loss(y_true, y_pred):
     mse = F.mse_loss(y_true, y_pred)
-    psnr = 20 * torch.log10(1.0 / torch.sqrt(mse)  + 1e-8)
+    psnr = 20 * torch.log10(1.0 / torch.sqrt(mse))
     return 40.0 - torch.mean(psnr)
 
 def smooth_l1_loss(y_true, y_pred):
@@ -118,7 +118,6 @@ class CombinedLoss(nn.Module):
         self.alpha4 = 0.5
         self.alpha5 = 0.0083
         self.alpha6 = 0.25
-        #self.alpha7 = 0.1
 
     def forward(self, y_true, y_pred):
         smooth_l1_l = smooth_l1_loss(y_true, y_pred)
@@ -127,14 +126,9 @@ class CombinedLoss(nn.Module):
         hist_l = histogram_loss(y_true, y_pred)
         psnr_l = psnr_loss(y_true, y_pred)
         color_l = color_loss(y_true, y_pred)
-        #exposure_l = exposure_loss(y_true, y_pred)
-        #ill_smooth_l = illumnation_smoothness_loss(y_true, y_pred)
-        #spatial_const_l = spatial_consistency_loss(y_true, y_pred)
 
         total_loss = (self.alpha1 * smooth_l1_l + self.alpha2 * perc_l + 
                       self.alpha3 * hist_l + self.alpha5 * psnr_l + 
                       self.alpha6 * color_l + self.alpha4 * ms_ssim_l)
-                      #self.alpha7 * exposure_l + self.alpha7 * ill_smooth_l +
-                      #self.alpha7 * spatial_const_l)
 
         return torch.mean(total_loss)
