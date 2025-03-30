@@ -54,7 +54,7 @@ def calculate_ssim(img1, img2, max_pixel_value=1.0, gt_mean=True):
 def main():
     # Hyperparameters
     learning_rate = 2e-4 
-    num_epochs = 200
+    num_epochs = 1000
     batch_size = 1 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
@@ -81,7 +81,7 @@ def main():
     
     # Two-phase training approach
     use_gan = False  # Start with content losses only
-    gan_start_epoch = 25  # Start GAN training after this epoch
+    gan_start_epoch = 50  # Start GAN training after this epoch
     
     os.makedirs('results', exist_ok=True)
     
