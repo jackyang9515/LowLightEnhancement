@@ -138,7 +138,7 @@ class Denoiser(nn.Module):
                 init.constant_(layer.bias, 0)
 
 class LYT(nn.Module):
-    def __init__(self, filters=64):
+    def __init__(self, filters=32):
         super(LYT, self).__init__()
         self.process_y = self._create_processing_layers(filters)
         self.process_cb = self._create_processing_layers(filters)
