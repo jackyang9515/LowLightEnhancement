@@ -2,8 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
-
-# TODO: Simplify much of this implementation and add PATCHGAN
+try:
+    import transformer_engine.pytorch as te
+    from transformer_engine.common.recipe import Format
+    HAS_TRANSFORMER_ENGINE = True
+except ImportError:
+    HAS_TRANSFORMER_ENGINE = False
 
 class LayerNormalization(nn.Module):
     def __init__(self, dim):
@@ -11,10 +15,8 @@ class LayerNormalization(nn.Module):
         self.norm = nn.LayerNorm(dim)
 
     def forward(self, x):
-        # Rearrange the tensor for LayerNorm (B, C, H, W) to (B, H, W, C)
         x = x.permute(0, 2, 3, 1)
         x = self.norm(x)
-        # Rearrange back to (B, C, H, W)
         return x.permute(0, 3, 1, 2)
 
 class SEBlock(nn.Module):
@@ -138,8 +140,9 @@ class Denoiser(nn.Module):
                 init.constant_(layer.bias, 0)
 
 class LYT(nn.Module):
-    def __init__(self, filters=32):
+    def __init__(self, filters=32, use_fp8=False):
         super(LYT, self).__init__()
+        self.use_fp8 = use_fp8
         self.process_y = self._create_processing_layers(filters)
         self.process_cb = self._create_processing_layers(filters)
         self.process_cr = self._create_processing_layers(filters)
@@ -150,6 +153,13 @@ class LYT(nn.Module):
         self.lum_conv1 = nn.Conv2d(filters, filters, kernel_size=3, padding=1)
         self.lum_conv2 = nn.Conv2d(filters, filters, kernel_size=3, padding=1)
         
+        if self.use_fp8 and HAS_TRANSFORMER_ENGINE:
+            self.lum_linear1 = te.Linear(filters, filters, bias=True)
+            self.lum_linear2 = te.Linear(filters, filters, bias=True)
+        else:
+            self.lum_linear1 = nn.Linear(filters, filters)
+            self.lum_linear2 = nn.Linear(filters, filters)
+
         self.lum_conv = nn.Sequential(
             nn.Conv2d(filters, filters*2, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
@@ -172,39 +182,45 @@ class LYT(nn.Module):
         )
 
     def forward(self, y, uv):
-        y_original = y
-        
-        cb, cr = torch.split(uv, 1, dim=1)
-        cb = self.denoiser_cb(cb) + cb
-        cr = self.denoiser_cr(cr) + cr
+        with te.fp8_autocast(enabled=self.use_fp8):
+            y_original = y
+            
+            cb, cr = torch.split(uv, 1, dim=1)
+            cb = self.denoiser_cb(cb) + cb
+            cr = self.denoiser_cr(cr) + cr
 
-        y_processed = self.process_y(y)
-        cb_processed = self.process_cb(cb)
-        cr_processed = self.process_cr(cr)
+            y_processed = self.process_y(y)
+            cb_processed = self.process_cb(cb)
+            cr_processed = self.process_cr(cr)
 
-        ref = torch.cat([cb_processed, cr_processed], dim=1)
-        
-        # Simplified luminance processing with more skip connections
-        lum = y_processed
-        lum = lum + self.lum_conv1(lum)
-        lum = lum + self.lum_conv2(lum)
-        lum = lum + self.lum_conv(lum)
+            ref = torch.cat([cb_processed, cr_processed], dim=1)
+            
+            lum = y_processed
+            lum = lum + self.lum_conv1(lum)
+            lum = lum + self.lum_conv2(lum)
 
-        ref = self.ref_conv(ref)
-        shortcut = ref
-        ref = ref + 0.2 * self.lum_conv(lum)
-        ref = self.msef(ref)
-        ref = ref + shortcut
+            if self.use_fp8 and HAS_TRANSFORMER_ENGINE:
+                b, c, h, w = lum.shape
+                lum_reshaped = lum.permute(0, 2, 3, 1).reshape(-1, c)
+                lum_lin = self.lum_linear1(lum_reshaped)
+                lum_lin = self.lum_linear2(lum_lin)
+                lum = lum_lin.reshape(b, h, w, c).permute(0, 3, 1, 2)
+            else:
+                lum = lum + self.lum_conv(lum)
 
-        recombined = self.recombine(torch.cat([ref, lum], dim=1))
-        output = self.final_adjustments(recombined)
-        
-        # Global shortcut to preserve original details
-        y_shortcut = self.shortcut_conv(y_original)
-        output = torch.sigmoid(output + 0.1 * y_shortcut)
-        
-        # Add clipping for safety
-        output = torch.clamp(output, 0, 1)
+            ref = self.ref_conv(ref)
+            shortcut = ref
+            ref = ref + 0.2 * self.lum_conv(lum)
+            ref = self.msef(ref)
+            ref = ref + shortcut
+
+            recombined = self.recombine(torch.cat([ref, lum], dim=1))
+            output = self.final_adjustments(recombined)
+            
+            y_shortcut = self.shortcut_conv(y_original)
+            output = torch.sigmoid(output + 0.1 * y_shortcut)
+            
+            output = torch.clamp(output, 0, 1)
         return output
 
     

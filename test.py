@@ -4,7 +4,6 @@ from torchmetrics.functional import structural_similarity_index_measure
 from model import LYT
 from dataset import create_dataloaders
 import os
-import numpy as np
 from torchvision.utils import save_image
 import time
 import torch.quantization
@@ -12,14 +11,9 @@ import copy
 from transformer_engine.common.recipe import DelayedScaling, Format
 from train import calculate_psnr, calculate_ssim
 from tabulate import tabulate
-from colorama import Fore, Style, init
 from torch.profiler import profile, record_function, ProfilerActivity
-import math
 
-# Initialize colorama for colored terminal output
-init()
-
-# Check for Transformer Engine (for FP8 hardware acceleration)
+# check for Transformer Engine (for FP8 hardware acceleration)
 try:
     import transformer_engine.pytorch as te
     HAS_TRANSFORMER_ENGINE = True
@@ -27,7 +21,7 @@ try:
 except ImportError:
     HAS_TRANSFORMER_ENGINE = False
 
-# Check for TensorRT (for INT8 hardware acceleration)
+# check for tensorrt (for INT8)
 try:
     import tensorrt as trt
     import torch_tensorrt
@@ -35,32 +29,6 @@ try:
     print("TensorRT found - hardware INT8 available")
 except ImportError:
     HAS_TENSORRT = False
-
-def convert_fp8(fp32_model):
-    fp8_model = copy.deepcopy(fp32_model)
-    
-    fp8_recipe = DelayedScaling(
-        margin=0,
-        interval=1,
-        fp8_format=Format.E4M3
-    )
-    
-    class FP8AutocastModel(torch.nn.Module):
-        def __init__(self, model):
-            super(FP8AutocastModel, self).__init__()
-            self.model = model
-            self.fp8_recipe = fp8_recipe
-            
-        def forward(self, y, uv):
-            try:
-                with te.fp8_autocast(enabled=True, fp8_recipe=self.fp8_recipe):
-                    return self.model(y, uv)
-            except Exception as e:
-                print(f"Error in FP8 autocast: {e}")
-                return self.model(y, uv)
-    
-    print("Created FP8 model with autocast only (no layer replacement)")
-    return FP8AutocastModel(fp8_model)
 
 def convert_int8(model, sample_inputs, calibration_dataloader=None):
     if not HAS_TENSORRT:
@@ -100,7 +68,6 @@ def measure_flops(model, inputs, fp16_mode=False):
     
     torch.cuda.synchronize()
     
-    # Parse FLOPS from profiler output
     total_flops = 0
     flops_by_operator = {}
     
@@ -126,7 +93,6 @@ def benchmark_model(model, dataloader, device, num_warmup=10, num_runs=50, fp16_
                 break
             y, uv = y.to(device), uv.to(device)
             
-            # Handle FP16 inference
             if fp16_mode:
                 y = y.half()
                 uv = uv.half()
@@ -162,18 +128,14 @@ def validate(model, dataloader, device, result_dir, precision="fp32", fp16_mode=
     total_psnr = 0
     total_ssim = 0
     
-    # Get sample input for FLOPS measurement
     sample_y, sample_uv, _ = next(iter(dataloader))
     sample_y, sample_uv = sample_y.to(device), sample_uv.to(device)
     
-    # Measure FLOPS
     flops, flops_by_op = measure_flops(model, [sample_y, sample_uv], fp16_mode)
     gflops = flops / 1e9
     
-    # Benchmark performance
     perf_metrics = benchmark_model(model, dataloader, device, fp16_mode=fp16_mode)
     
-    # Calculate FLOPS per second (FLOPS efficiency)
     flops_per_second = flops / (perf_metrics["latency_ms"] / 1000)
     tflops_per_second = flops_per_second / 1e12
     
@@ -184,7 +146,7 @@ def validate(model, dataloader, device, result_dir, precision="fp32", fp16_mode=
             if fp16_mode:
                 y = y.half()
                 uv = uv.half()
-                output = model(y, uv).float()  # Convert back to float32 for comparison
+                output = model(y, uv).float() 
             else:
                 output = model(y, uv)
                 
@@ -222,13 +184,13 @@ def validate(model, dataloader, device, result_dir, precision="fp32", fp16_mode=
     }
 
 def print_model_results(precision, results, baseline_results=None):
-    print(f"\n{Fore.CYAN}=== {precision.upper()} Model Results ==={Style.RESET_ALL}")
+    print(f"\n=== {precision.upper()} Model Results ===")
     
-    print(f"{Fore.GREEN}Quality Metrics:{Style.RESET_ALL}")
+    print("Quality Metrics:")
     print(f"  PSNR: {results['psnr']:.4f}")
     print(f"  SSIM: {results['ssim']:.4f}")
     
-    print(f"{Fore.GREEN}Performance Metrics:{Style.RESET_ALL}")
+    print("Performance Metrics:")
     print(f"  Latency: {results['latency_ms']:.2f} ms")
     print(f"  Throughput: {results['throughput']:.2f} images/sec")
     print(f"  Memory: {results['memory_allocated']:.2f} MB")
@@ -236,7 +198,7 @@ def print_model_results(precision, results, baseline_results=None):
     print(f"  TFLOPS/sec: {results['tflops_per_second']:.4f}")
     
     if baseline_results and precision != "fp32":
-        print(f"{Fore.GREEN}Comparison to FP32 Baseline:{Style.RESET_ALL}")
+        print("Comparison to FP32 Baseline:")
         speedup = results['throughput'] / baseline_results['throughput']
         psnr_diff = results['psnr'] - baseline_results['psnr']
         ssim_diff = results['ssim'] - baseline_results['ssim']
@@ -250,7 +212,7 @@ def print_model_results(precision, results, baseline_results=None):
         print(f"  Memory reduction: {memory_ratio:.2f}x")
 
 def print_comparison_table(results):
-    print(f"\n{Fore.YELLOW}=== Model Precision Comparison ==={Style.RESET_ALL}")
+    print("\n=== Model Precision Comparison ===")
     
     table_data = []
     headers = ["Precision", "PSNR", "SSIM", "Latency (ms)", "Throughput", "Speedup", "TFLOPS/s", "Memory (MB)"]
@@ -351,7 +313,7 @@ def save_results_to_file(results, dataset_name, cuda_capability):
             
             f.write("\n")
         
-    print(f"\n{Fore.GREEN}Results saved to {results_file}{Style.RESET_ALL}")
+    print(f"\nResults saved to {results_file}")
 
 def main():
     test_low = "preprocessed_data/validation/low_yuv/"
@@ -391,7 +353,7 @@ def main():
 
     results = {}
     
-    print(f"\n{Fore.CYAN}=== Testing FP32 model (baseline) ==={Style.RESET_ALL}")
+    print("\n=== Testing FP32 model (baseline) ===")
     fp32_model = LYT().to(device)
     fp32_model.load_state_dict(torch.load(weights_path, map_location=device))
     
@@ -403,11 +365,10 @@ def main():
     
     print_model_results("fp32", fp32_results)
     
-    print(f"\n{Fore.CYAN}=== Testing FP16 model ==={Style.RESET_ALL}")
+    print("\n=== Testing FP16 model ===")
     fp16_model = copy.deepcopy(fp32_model).half()
     
     with torch.no_grad():
-        # Warm up with half precision inputs
         y_fp16 = y_sample.half()
         uv_fp16 = uv_sample.half()
         fp16_model(y_fp16, uv_fp16)
@@ -418,30 +379,18 @@ def main():
     print_model_results("fp16", fp16_results, fp32_results)
     
     if HAS_TRANSFORMER_ENGINE:
-        print(f"\n{Fore.CYAN}=== Testing FP8 model (autocast only) ==={Style.RESET_ALL}")
+        print("\n=== Testing FP8 with Transformer Engine ===")
+        fp8_model = LYT(filters=32, use_fp8=True).to(device)
+        checkpoint = torch.load(weights_path, map_location=device)
+        fp8_model.load_state_dict(checkpoint, strict=False)
         
-        try:
-            fp8_model = convert_fp8(fp32_model)
-            
-            with torch.no_grad():
-                try:
-                    fp8_model(y_sample, uv_sample)
-                    print("FP8 autocast model successfully initialized")
-                except Exception as e:
-                    print(f"Error initializing FP8 autocast model: {e}")
-                    print("Falling back to original model...")
-                    fp8_model = fp32_model
-            
-            fp8_results = validate(fp8_model, test_loader, device, result_dirs["fp8"], "fp8")
-            results["fp8"] = fp8_results
-            
-            print_model_results("fp8", fp8_results, fp32_results)
-        except Exception as e:
-            print(f"Overall error setting up FP8 autocast model: {e}")
-            print("Skipping FP8 evaluation")
+        fp8_results = validate(fp8_model, test_loader, device, result_dirs["fp8"], "fp8")
+        results["fp8"] = fp8_results
+        
+        print_model_results("fp8", fp8_results, fp32_results)
     
     if HAS_TENSORRT:
-        print(f"\n{Fore.CYAN}=== Testing INT8 model (hardware accelerated) ==={Style.RESET_ALL}")
+        print("\n=== Testing INT8 model (hardware accelerated) ===")
         base_model = copy.deepcopy(fp32_model)
         
         try:

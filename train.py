@@ -58,6 +58,8 @@ def main():
     batch_size = 1 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
+    use_fp8 = False  # set to True to enable FP8 via Transformer Engine
+    
     # Data paths
     train_low_yuv = "preprocessed_data/training/low_yuv/"
     train_high_rgb = "preprocessed_data/training/high_rgb/"
@@ -66,7 +68,7 @@ def main():
         
     train_loader, val_loader = create_dataloaders(train_low_yuv, train_high_rgb, val_low_yuv, val_high_rgb, crop_size=256, batch_size=1)
     
-    generator = LYT().to(device)
+    generator = LYT(filters=32, use_fp8=use_fp8).to(device)
     discriminator = Discriminator(input_nc=6).to(device)
     
     content_criterion = CombinedLoss(device)
@@ -80,8 +82,8 @@ def main():
     scheduler_D = optim.lr_scheduler.ReduceLROnPlateau(optimizer_D, mode='max', factor=0.5, patience=10)
     
     # Two-phase training approach
-    use_gan = False  # Start with content losses only
-    gan_start_epoch = 50  # Start GAN training after this epoch
+    use_gan = False
+    gan_start_epoch = 50  # start GAN training after this epoch
     
     os.makedirs('results', exist_ok=True)
     
@@ -202,7 +204,7 @@ def main():
 
         print(f"Epoch {epoch+1}/{num_epochs} - G Loss: {avg_g_loss:.4f}, D Loss: {avg_d_loss:.4f}, PSNR: {avg_psnr:.4f}, SSIM: {avg_ssim:.6f}")
         
-        # Save best model
+        # save best model
         if avg_psnr > best_psnr:
             best_psnr = avg_psnr
             best_epoch = epoch
